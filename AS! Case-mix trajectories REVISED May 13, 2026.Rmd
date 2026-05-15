@@ -1,0 +1,1020 @@
+---
+title: "AS! Case-mix trajectories"
+author: "Ryan Stanley Falck"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    theme: united
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# 1) Data Set-Up and Management
+
+Load packages
+```{r}
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(readxl,psych,ggplot2,tableone,lavaan, semPlot, sem, semTools, tidyverse, haven, gbmt, dplyr, lcmm, emmeans)
+```
+
+Set working directory
+```{r}
+setwd("~/Desktop/Manuscripts/Ongoing Projects/AS! Case-mix trajectories")
+```
+
+Load data
+```{r}
+falls_plus_HRU<-read_excel("AS_Econ_Falls_HRU_merge_Feb 22 2021.xlsx")
+geris<-read_excel("AS Geri_July 30 2018.xlsx")
+HRUs1 <- read_excel("AS! HRU Q1-3_June 13 2019.xlsx", sheet = "HRU Q1")
+HRUs2 <- read_excel("AS! HRU Q1-3_June 13 2019.xlsx", sheet = "HRU Q2")
+HRUs3 <- read_excel("AS! HRU Q1-3_June 13 2019.xlsx", sheet = "HRU Q3")
+```
+
+Data management of individual data frames. Preparing for merging
+```{r}
+falls_plus_HRU_2<-subset(falls_plus_HRU, assessmenperiod == 1)
+falls_plus_HRU_2$Stroop3_2<-as.numeric(falls_plus_HRU_2$`Stroop 3`) - as.numeric(falls_plus_HRU_2$`Stroop 2`)
+falls_plus_HRU_2$DSFB<-as.numeric(falls_plus_HRU_2$`Digit F`) - as.numeric(falls_plus_HRU_2$`Digit B`)
+falls_plus_HRU_3<-falls_plus_HRU_2[c(1,3,4,7:10,34:36,39,40,41,45,49:51,52:54,65:71,72,76,79,82,83)]
+falls_plus_HRU_3<-rename(falls_plus_HRU_3,c("ID"="id"))
+
+geris_2<-subset(geris, ID != 330)
+```
+
+HRUQ1 Management
+```{r}
+
+#Create dataframe
+HRUs1_2 <- HRUs1[c(1,2,7)]
+HRUs1_3<-rename(HRUs1_2,c("Time"="Assessmen Period"))
+HRUs1_4<-subset(HRUs1_3,Time!="Lagime")
+HRUs1_4$Time<-as.numeric(HRUs1_4$Time)
+
+#Delete duplicates
+HRUs1_5<-distinct(HRUs1_4)
+
+#Resolve remaining multiple values
+HRUs1_6<-HRUs1_5[-c(909,3128,3129),] #Resolves double input for ID=197 Time=1. Removes both inputs for ID=369 Time=3 (inputting manually)
+
+#Insert missing values 
+ID<-c(171,171,171,251,255,255,255,255,255,369,369)
+Time<-c(2,11,12,13,7,8,9,10,11,5,3)
+hruq1t<-c(NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,563.3191)
+missing<-data.frame(ID,Time,hruq1t)
+HRUs1_final<-rbind(HRUs1_6, missing)
+```  
+
+HRUQ2 Management
+```{r}
+#Create dataframe
+HRUs2_2<-rename(HRUs2,c("Time"="Assessmen Period"))
+HRUs2_3<-subset(HRUs2_2,Time!="Lagime")
+HRUs2_3$Time<-as.numeric(HRUs2_3$Time)
+
+#Delete duplicates
+HRUs2_4<-distinct(HRUs2_3)
+
+#No remaining multiple values
+
+#Insert missing values 
+ID<-c(171,171,171,251,255,255,255,255,255,369)
+Time<-c(2,11,12,13,7,8,9,10,11,5)
+hruq2total<-c(NA,NA,NA,NA,NA,NA,NA,NA,NA,NA)
+missing_2<-data.frame(ID,Time,hruq2total)
+HRUs2_final<-rbind(HRUs2_4, missing_2)
+```
+
+HRUQ3 Management
+```{r}
+HRUs3_2<-rename(HRUs3,c("Time"="Assessmen Period"))
+HRUs3_2$Time<-as.factor(HRUs3_2$Time)
+
+#Delete duplicates
+HRUs3_3<-distinct(HRUs3_2)
+
+#Resolve remaining multiple values
+HRUs3_4<-HRUs3_3[!(HRUs3_3$ID=="369" & HRUs3_3$Time=="3"),]#Removes both inputs for ID=369 Time=3 (inputting manually)
+
+ID<-c(171,171,171,251,255,255,255,255,255,369,369)
+Time<-c(2,11,12,13,7,8,9,10,11,5,3)
+hruq3total<-c(NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,314.7633)
+missing_3<-data.frame(ID,Time,hruq3total)
+HRUs3_final<-rbind(HRUs3_4, missing_3)
+```
+
+Merge HRU data
+```{r}
+HRUstotal_1<- merge(HRUs1_final,HRUs2_final)
+HRUstotal_final<- merge(HRUstotal_1,HRUs3_final)
+```
+
+Create HRU Total Cost
+```{r}
+#HRU total cost across three categories
+HRUstotal_final$HRU_totalcost<-HRUstotal_final$hruq1t + HRUstotal_final$hruq2total + HRUstotal_final$hruq3total
+
+#Accounting for inflation
+HRUstotal_final$HRU_totalcost_inflated<-HRUstotal_final$HRU_totalcost *1.1110
+
+#Because the costs are large numbers, this will shrink the dependent variable and hopefully improve model fit
+HRUstotal_final$HRU_totalcost_small <- HRUstotal_final$HRU_totalcost_inflated/1000
+
+#As another alternative I normalized cost data in order to account for the issues of non-normality using a min-max normalization
+HRUstotal_final$HRU_normalized <- (HRUstotal_final$HRU_totalcost_small - min(HRUstotal_final$HRU_totalcost_small, na.rm=TRUE)) / (max(HRUstotal_final$HRU_totalcost_small, na.rm = TRUE) - min(HRUstotal_final$HRU_totalcost_small, na.rm = TRUE))
+
+#I also log-transformed cost data in order to account for the issues of non-normality using a min-max normalization
+HRUstotal_final$HRU_log <- log(HRUstotal_final$HRU_totalcost_inflated + 1)
+```
+
+
+Create final data frame for all variables
+```{r}
+long.data<-merge(falls_plus_HRU_3, HRUstotal_final)
+```
+
+Final Data Management
+```{r}
+long.data2<-long.data[c(1:3,8,33,38:41)]
+long.data2$Group<-as.factor(long.data2$Group)
+```
+
+Note: Two participants did not provide HRU data (ID= 330 and ID=450). All other participants were included in the model.
+
+# 2) Fitting the primary model
+
+This can be done using the lcmm package. We first explored how to fit the data according to the link function and number of polynomials (up to 3 orders). We examined: 1) a linear link function; 2) a spline function using 5 equidistant splines; and 3) a spline function using 3 quantiles. We do not include covariates because this causes issues with the Hessian (i.e., the estimate of the curvature of the log-likelihood surface at the maximum likelihood estimate) - this is likely due to complete separation wherein one or more parameters perfectly predict the response parameter 
+```{r}
+model1<-lcmm(HRU_totalcost_small~Time, random=~ Time, subject='ID', ng = 1 , link = 'linear', data = long.data2)
+model2<-lcmm(HRU_totalcost_small~Time, random=~Time, subject='ID', ng = 1 , link = '3-equi-splines', data = long.data2)
+model3<-lcmm(HRU_totalcost_small~Time, random=~Time, subject='ID', ng = 1 , link = '3-quant-splines', data = long.data2)
+model4<-lcmm(HRU_totalcost_small~Time + I(Time^2), random=~ Time + I(Time^2), subject='ID', ng = 1 , link = 'linear', data = long.data2)
+model5<-lcmm(HRU_totalcost_small~Time + I(Time^2), random=~Time + I(Time^2), subject='ID', ng = 1 , link = '3-equi-splines', data = long.data2)
+model6<-lcmm(HRU_totalcost_small~Time + I(Time^2), random=~Time + I(Time^2), subject='ID', ng = 1 , link = '3-quant-splines', data = long.data2)
+model7<-lcmm(HRU_totalcost_small~Time + I(Time^2) + I(Time^3), random=~ Time + I(Time^2) + I(Time^3), subject='ID', ng = 1 , link = 'linear', data = long.data2)
+model8<-lcmm(HRU_totalcost_small~Time + I(Time^2) + I(Time^3), random=~Time + I(Time^2) + I(Time^3), subject='ID', ng = 1 , link = '3-equi-splines', data = long.data2)
+model9<-lcmm(HRU_totalcost_small~Time + I(Time^2) + I(Time^3), random=~Time + I(Time^2) + I(Time^3), subject='ID', ng = 1 , link = '3-quant-splines', data = long.data2)
+
+summarytable(model1, model2, model3, model4, model5, model6, model7, model8, model9, which = c("G", "loglik", "conv", "npm", "AIC", "BIC", "SABIC", "entropy","ICL", "%class"))
+```
+We then compared the estimated functions by plot.
+```{r}
+col <- rainbow(10)
+plot(model1, which="linkfunction",bty='l', ylab="HRUCost", col=col[1], lwd=2, xlab="underlying latent process")
+plot(model2, which="linkfunction", add=TRUE, col=col[2], lwd=2)
+plot(model3, which="linkfunction", add=TRUE, col=col[3], lwd=2)
+plot(model4, which="linkfunction", add=TRUE, col=col[4], lwd=2)
+plot(model5, which="linkfunction", add=TRUE, col=col[5], lwd=2)
+plot(model6, which="linkfunction", add=TRUE, col=col[6], lwd=2)
+plot(model7, which="linkfunction", add=TRUE, col=col[7], lwd=2)
+plot(model8, which="linkfunction", add=TRUE, col=col[8], lwd=2)
+plot(model9, which="linkfunction", add=TRUE, col=col[9], lwd=2)
+legend(x="topleft", legend=c("model1", "model2","model3","model4","model5","model6","model7","model8","model9"), lty=1, col=col, bty="n", lwd=2)
+```
+
+The results suggest that either a 2nd or 3rd order model using 3 splines at 25%, 50% and 75% provides the best fit. Next we investigate the number of groups in each model.
+
+First order models are described below. The best fitting models is model3d (4 classes). 
+```{r}
+model3a<-lcmm(HRU_totalcost_small~Time, random=~Time, subject='ID', ng = 1 , link = '3-quant-splines', data = long.data2)
+model3b<-lcmm(HRU_totalcost_small~Time, random=~Time, mixture =~ Time, subject='ID', ng = 2 , link = '3-quant-splines', data = long.data2, B=model3)
+model3c<-lcmm(HRU_totalcost_small~Time, random=~Time, mixture =~ Time, subject='ID', ng = 3 , link = '3-quant-splines', data = long.data2, B=model3)
+model3d<-lcmm(HRU_totalcost_small~Time, random=~Time, mixture =~ Time, subject='ID', ng = 4 , link = '3-quant-splines', data = long.data2, B=model3)
+model3e<-lcmm(HRU_totalcost_small~Time, random=~Time, mixture =~ Time, subject='ID', ng = 5 , link = '3-quant-splines', data = long.data2, B=model3)
+model3f<-lcmm(HRU_totalcost_small~Time, random=~Time, mixture =~ Time, subject='ID', ng = 6 , link = '3-quant-splines', data = long.data2, B=model3)
+
+summarytable(model3a, model3b, model3c, model3d, model3e, model3f, which = c("G", "loglik", "conv", "npm", "AIC", "BIC", "SABIC", "entropy","ICL", "%class"))
+```
+
+
+Second order models are described below. Model6c (3 classes), model6d (4 classes), model6e (5 classes), and model6f (6 classes) are the best fitting models
+```{r}
+model6a<-lcmm(HRU_totalcost_small~Time + I(Time^2), random=~Time + I(Time^2), subject='ID', ng = 1 , link = '3-quant-splines', data = long.data2)
+model6b<-lcmm(HRU_totalcost_small~Time + I(Time^2), random=~Time + I(Time^2), mixture =~ Time + I(Time^2), subject='ID', ng = 2 , link = '3-quant-splines', data = long.data2, B=model6)
+model6c<-lcmm(HRU_totalcost_small~Time + I(Time^2), random=~Time + I(Time^2), mixture =~ Time + I(Time^2), subject='ID', ng = 3 , link = '3-quant-splines', data = long.data2, B=model6)
+model6d<-lcmm(HRU_totalcost_small~Time + I(Time^2), random=~Time + I(Time^2), mixture =~ Time + I(Time^2), subject='ID', ng = 4 , link = '3-quant-splines', data = long.data2, B=model6)
+model6e<-lcmm(HRU_totalcost_small~Time + I(Time^2), random=~Time + I(Time^2), mixture =~ Time + I(Time^2), subject='ID', ng = 5 , link = '3-quant-splines', data = long.data2, B=model6)
+model6f<-lcmm(HRU_totalcost_small~Time + I(Time^2), random=~Time + I(Time^2), mixture =~ Time + I(Time^2), subject='ID', ng = 6 , link = '3-quant-splines', data = long.data2, B=model6)
+
+summarytable(model6a, model6b, model6c, model6d, model6e, model6f, which = c("G", "loglik", "conv", "npm", "AIC", "BIC", "SABIC", "entropy","ICL", "%class"))
+```
+
+
+The best fitting models are then compared here
+```{r}
+summarytable(model3d, model6c, model6d, model6e, model6f, which = c("G", "loglik", "conv", "npm", "AIC", "BIC", "SABIC", "entropy","ICL", "%class"))
+```
+
+Summary plots comparing models are here
+```{r}
+summaryplot(model3d, model6c, model6d, model6e, model6f, which = c("AIC", "BIC", "entropy", "ICL"))
+```
+
+Based on these results, it seems that each model is somewhat comparable. Thus, we plotted each of the case-mix trajectories in order to determine which one appeared to best explain the data
+
+Model 3d: 1st order with 4 classes
+```{r}
+OEP_data<-data.frame(Time= seq(1,13, length=1000))
+OEP_pred <- predictY(model3d, OEP_data, var.time ="Time", draws = FALSE)
+plot(OEP_pred, col=c("red","navy", "green", "purple"), lwd = 2, xlab="Time (Months)", ylab="HRU Total Cost (per $1000)", legend=NULL, main="Linear Model: 4 Classes",ylim=c(0,5))
+legend(x="topleft",legend=c("Class 1","Class 2", "Class 3", "Class 4"), col=c("red","navy", "green",  "purple"), lty=1,lwd=2, ncol=1, bty="n", cex = 0.7)
+```
+
+
+Model 6C: 2nd order with 3 classes
+```{r}
+OEP_data<-data.frame(Time= seq(1,13, length=1000))
+OEP_pred <- predictY(model6c, OEP_data, var.time ="Time", draws = FALSE)
+plot(OEP_pred, col=c("red","navy", "green"), lwd = 2, xlab="Time (Months)", ylab="HRU Total Cost (per $1000)", legend=NULL,  main="Quadratic Model: 3 Classes",ylim=c(0,10))
+legend(x="topleft",legend=c("Class 1","Class 2", "Class 3"), col=c("red","navy", "green"), lty=1,lwd=2, ncol=1, bty="n", cex = 0.7)
+```
+
+
+Model 6D: 2nd order with 4 classes
+```{r}
+OEP_data<-data.frame(Time= seq(1,13, length=1000))
+OEP_pred <- predictY(model6d, OEP_data, var.time ="Time", draws = FALSE)
+plot(OEP_pred, col=c("red","navy", "green", "purple"), lwd = 2, xlab="Time (Months)", ylab="HRU Total Cost (per $1000)",legend=NULL,main="Quadratic Model: 4 Classes",ylim=c(0,10))
+legend(x="topleft",legend=c("Class 1","Class 2", "Class 3", "Class 4"), col=c("red","navy", "green", "purple"), lty=1,lwd=2, ncol=1, bty="n", cex = 0.7)
+```
+
+
+Model 6E: 2nd order with 5 classes
+```{r}
+OEP_data<-data.frame(Time= seq(1,13, length=1000))
+OEP_pred <- predictY(model6e, OEP_data, var.time ="Time", draws = FALSE)
+plot(OEP_pred, col=c("red","navy", "green", "purple", "gold"), lwd = 2, xlab="Time (Months)", ylab="HRU Total Cost (per$1000)",legend=NULL,  main="Quadratic Model: 5 Classes",ylim=c(0,10))
+legend(x="topleft",legend=c("Class 1","Class 2", "Class 3", "Class 4", "Class 5"), col=c("red","navy", "green", "purple", "gold"), lty=1,lwd=2, ncol=1, bty="n", cex = 0.7)
+```
+
+Model 6F: 2nd order with 6 classes
+```{r}
+OEP_data<-data.frame(Time= seq(1,13, length=1000))
+OEP_pred <- predictY(model6f, OEP_data, var.time ="Time", draws = FALSE)
+plot(OEP_pred, col=c("red","navy", "green", "purple", "gold", "magenta"), lwd = 2, xlab="Time (Months)", ylab="HRU Total Cost (per$1000)",legend=NULL,  main="Quadratic Model: 6 Classes",ylim=c(0,10))
+legend(x="topleft",legend=c("Class 1","Class 2", "Class 3", "Class 4", "Class 5", "Class 6"), col=c("red","navy", "green", "purple", "gold", "magenta"), lty=1,lwd=2, ncol=1, bty="n", cex = 0.7)
+```
+
+## 2.1) Final model
+
+Based on these data, the final model was a linear 4 class model using 3-quant splines.
+
+```{r}
+summary(model3d)
+```
+
+```{r}
+OEP_data<-data.frame(Time= seq(1,13, length=1000))
+OEP_pred <- predictY(model3d, OEP_data, var.time ="Time", draws = FALSE)
+plot(OEP_pred, col=c("red","navy", "green", "purple"), lwd = 2, xlab="Time (Months)", ylab="HRU Total Cost (per $1000)", legend=NULL, main="Case-mix trajectories for Health Resource Utilization (2021 CAD)",ylim=c(0,5))
+legend(x="topleft",legend=c("Class 1","Class 2", "Class 3", "Class 4"), col=c("red","navy", "green",  "purple"), lty=1,lwd=2, ncol=1, bty="n", cex = 0.7)
+```
+
+Plot in ggplot2
+```{r}
+OEP_pred <- predictY(model3d, OEP_data, var.time ="Time", draws = FALSE)
+Time<-OEP_pred$times
+Classes<-as.data.frame(OEP_pred$pred)
+OEP_data_frame<-cbind(Time, Classes)
+
+Class1_frame<-OEP_data_frame[c(1,2)]
+Class2_frame<-OEP_data_frame[c(1,3)]
+Class3_frame<-OEP_data_frame[c(1,4)]
+Class4_frame<-OEP_data_frame[c(1,5)]
+Class1_frame$Class<- "Class 1"
+Class2_frame$Class<- "Class 2"
+Class3_frame$Class<- "Class 3"
+Class4_frame$Class<- "Class 4"
+Class1_frame <- rename(Class1_frame, "Predicted" = "Ypred_class1")
+Class2_frame <- rename(Class2_frame, "Predicted" = "Ypred_class2")
+Class3_frame <- rename(Class3_frame, "Predicted" = "Ypred_class3")
+Class4_frame <- rename(Class4_frame, "Predicted" = "Ypred_class4")
+
+graph_data<-rbind(Class1_frame, Class2_frame, Class3_frame, Class4_frame)
+
+figure1<-ggplot(graph_data, aes(x=Time, y=Predicted, group=Class)) + geom_smooth(aes(colour=Class)) + theme_classic() + xlab("Time (Months)") + ylab("HRU Total Cost (per $1000 CAD") + ylim(0,5)
+
+ggsave("Figure 1 - case trajectories.tiff",figure1, width = 4, height = 4, dpi = 300)
+```
+
+
+
+Predicted posterior probabilities
+```{r}
+postprob(model3d)
+```
+
+
+### 2.2) Describe classes
+Create data frame with classes
+```{r}
+model3d.frame<-model3d$pprob
+
+baseline.data<-merge(model3d.frame, falls_plus_HRU_3, by="ID")
+
+baseline.data.2 <- rename(baseline.data, "Falls_number" = "Total Falls", "Final_Weight" = "Final Weight", "Final_Height"="Final Height", "WHR"="Waist to Hip Ratio","FCI"="FCI Total",
+                          "IADL"="Total IADL", "TrailsBA"="Trail Difference","TUG"="Mean TUG", "GaitSpeed"="Gait Speed", "SPPB"="NIA Total Score") 
+
+baseline.data.2$Gender[baseline.data.2$Gender==1]<-"Female"
+baseline.data.2$Gender[baseline.data.2$Gender==2]<-"Male"
+
+baseline.data.2$BMI<-baseline.data.2$Final_Weight/((baseline.data.2$Final_Height/100)^2)
+
+
+```
+
+Describe participants
+```{r}
+baseline.vars<-dput(names(baseline.data.2[c(8,13,7,17,16,38,20,21,23,12,33,34,35,24,25,36,37)]))
+baseline.data.2$Group<-as.factor(baseline.data.2$Group)
+
+Table1_full<-CreateTableOne(vars=baseline.vars, data=baseline.data.2)
+print(Table1_full,contDigits=2,missing=TRUE,quote=TRUE)
+
+Table1_stratified<-CreateTableOne(vars=baseline.vars, strata="class", data=baseline.data.2)
+print(Table1_stratified,contDigits=2,missing=TRUE,quote=TRUE)
+```
+
+# 3) Moderation analysis
+
+
+Moderation data set-up for cognitive and physical function
+```{r}
+long.data3<-long.data[c(1,19,20,30,33,38)]
+long.data3$HRU_totalcost_small <- long.data3$HRU_totalcost_inflated/1000
+
+#Binary variable for MCI (1=MCI)
+long.data3$MCI<-NA
+long.data3$MCI[long.data3$MoCA<26] <- 1
+long.data3$MCI[long.data3$MoCA>=26] <- 0
+
+#Binary variable for SPPB (1=Physical frailty)
+long.data3$Frailty<-NA
+long.data3$Frailty[long.data3$`NIA Total Score`<9] <- 1
+long.data3$Frailty[long.data3$`NIA Total Score`>=9] <- 0
+
+long.data4<-long.data3[c(1,5:9)]
+```
+
+## 3.1) Moderation by group
+
+Model development
+```{r}
+long.data2$Group.1<-NA
+long.data2$Group.1[long.data2$Group==0]<-"UC"
+long.data2$Group.1[long.data2$Group==1]<-"OEP"
+
+
+#Base model
+group.model.base<-lcmm(HRU_totalcost_small~Time*Group.1, random=~Time, subject='ID', ng = 1, link = '3-quant-splines', data = long.data2)
+
+#Full model
+group.model.moderation<-lcmm(HRU_totalcost_small~Time*Group.1, random=~Time, subject='ID', mixture =~ Time*Group.1, ng = 4, link = '3-quant-splines', data = long.data2, B=group.model.base)
+```
+
+Base model summary
+```{r}
+summary(group.model.base)
+```
+
+Full moderation model summary
+```{r}
+summary(group.model.moderation)
+```
+
+Graph
+```{r}
+OEP_mod_data<-data.frame(Time= seq(1,13, length=1000), Group.1=rep(c("OEP","UC")))
+OEP_mod_pred <- predictY(group.model.moderation, OEP_mod_data, var.time ="Time", draws = FALSE)
+
+Time<-OEP_mod_pred$times
+Group <- rep(c('OEP', 'UC'), length.out = 1000)
+Classes<-as.data.frame(OEP_mod_pred$pred)
+OEP_mod_data_frame<-cbind(Time, Group, Classes)
+
+Class1_frame<-OEP_mod_data_frame[c(1,2,3)]
+Class2_frame<-OEP_mod_data_frame[c(1,2,4)]
+Class3_frame<-OEP_mod_data_frame[c(1,2,5)]
+Class4_frame<-OEP_mod_data_frame[c(1,2,6)]
+Class1_frame$Class<- "Class 1"
+Class2_frame$Class<- "Class 2"
+Class3_frame$Class<- "Class 3"
+Class4_frame$Class<- "Class 4"
+Class1_frame <- rename(Class1_frame, "Predicted" = "Ypred_class1")
+Class2_frame <- rename(Class2_frame, "Predicted" = "Ypred_class2")
+Class3_frame <- rename(Class3_frame, "Predicted" = "Ypred_class3")
+Class4_frame <- rename(Class4_frame, "Predicted" = "Ypred_class4")
+
+graph_data<-rbind(Class1_frame, Class2_frame, Class3_frame, Class4_frame)
+
+figure2A<-ggplot(graph_data, aes(x=Time, y=Predicted, color=Class, linetype=Group)) + geom_smooth(aes(colour=Class, linetype=Group)) + theme_classic() + xlab("Time (Months)") + ylab("HRU Total Cost (per $1000 CAD") + ylim(0,5)
+
+ggsave("Figure 2A - case trajectories.tiff",figure2A, width = 4, height = 4, dpi = 300)
+```
+
+
+## 3.2) Moderation by age
+
+Model development
+```{r}
+#Summarize Age variable
+summary(long.data2$Age) #25% Quartile = 77; 75% Quartile = 86; Median = 82
+
+#Create binary age variable (i.e., > median age)
+long.data2$Age_binary<-NA
+long.data2$Age_binary[long.data2$Age<=82] <- "High"
+long.data2$Age_binary[long.data2$Age>82]<-"Low"
+
+#Base model
+age.model.base<-lcmm(HRU_totalcost_small~Time*Age_binary, random=~Time, subject='ID', ng = 1, link = '3-quant-splines', data = long.data2)
+
+#Full model
+age.model.moderation<-lcmm(HRU_totalcost_small~Time*Age_binary, random=~Time, subject='ID', mixture =~ Time*Age_binary, ng = 4, link = '3-quant-splines', data = long.data2, B=age.model.base)
+```
+
+Base model summary
+```{r}
+summary(age.model.base)
+```
+
+Full moderation model summary 
+```{r}
+summary(age.model.moderation)
+```
+
+Graph
+```{r}
+Age_mod_data<-data.frame(Time= seq(1,13, length=1000), Age_binary=rep(c("High","Low")))
+Age_mod_pred <- predictY(age.model.moderation, Age_mod_data, var.time ="Time", draws = FALSE)
+
+Time<-Age_mod_pred$times
+Age_binary <- rep(c('High', 'Low'), length.out = 1000)
+Classes<-as.data.frame(Age_mod_pred$pred)
+Age_mod_data_frame<-cbind(Time, Age_binary, Classes)
+
+Class1_frame<-Age_mod_data_frame[c(1,2,3)]
+Class2_frame<-Age_mod_data_frame[c(1,2,4)]
+Class3_frame<-Age_mod_data_frame[c(1,2,5)]
+Class4_frame<-Age_mod_data_frame[c(1,2,6)]
+Class1_frame$Class<- "Class 1"
+Class2_frame$Class<- "Class 2"
+Class3_frame$Class<- "Class 3"
+Class4_frame$Class<- "Class 4"
+Class1_frame <- rename(Class1_frame, "Predicted" = "Ypred_class1")
+Class2_frame <- rename(Class2_frame, "Predicted" = "Ypred_class2")
+Class3_frame <- rename(Class3_frame, "Predicted" = "Ypred_class3")
+Class4_frame <- rename(Class4_frame, "Predicted" = "Ypred_class4")
+
+graph_data<-rbind(Class1_frame, Class2_frame, Class3_frame, Class4_frame)
+
+figure2B<-ggplot(graph_data, aes(x=Time, y=Predicted, color=Class, linetype=Age_binary)) + geom_smooth(aes(colour=Class, linetype=Age_binary)) + theme_classic() + xlab("Time (Months)") + ylab("HRU Total Cost (per $1000 CAD") + ylim(0,5)
+
+ggsave("Figure 2B - case trajectories.tiff",figure2B, width = 4, height = 4, dpi = 300)
+```
+
+
+## 3.3) Moderation by Sex
+
+Model development
+```{r}
+long.data2$Sex<-NA
+long.data2$Sex[long.data2$Gender==2]<- "Male"
+long.data2$Sex[long.data2$Gender==1]<- "Female"
+
+
+#Base model
+sex.model.base<-lcmm(HRU_totalcost_small~Time*Sex, random=~Time, subject='ID', ng = 1, link = '3-quant-splines', data = long.data2)
+
+#Full model
+sex.model.moderation<-lcmm(HRU_totalcost_small~Time*Sex, random=~Time, subject='ID', mixture =~ Time*Sex, ng = 4, link = '3-quant-splines', data = long.data2, B=age.model.base)
+```
+
+Base model summary
+```{r}
+summary(sex.model.base)
+```
+
+Full moderation model summary
+```{r}
+summary(sex.model.moderation)
+```
+
+Graph
+```{r}
+Sex_mod_data<-data.frame(Time= seq(1,13, length=1000), Sex=rep(c("Male","Female")))
+Sex_mod_pred <- predictY(sex.model.moderation, Sex_mod_data, var.time ="Time", draws = FALSE)
+
+Time<-Age_mod_pred$times
+Sex <- rep(c('Male', 'Female'), length.out = 1000)
+Classes<-as.data.frame(Sex_mod_pred$pred)
+Sex_mod_data_frame<-cbind(Time, Sex, Classes)
+
+Class1_frame<-Sex_mod_data_frame[c(1,2,3)]
+Class2_frame<-Sex_mod_data_frame[c(1,2,4)]
+Class3_frame<-Sex_mod_data_frame[c(1,2,5)]
+Class4_frame<-Sex_mod_data_frame[c(1,2,6)]
+Class1_frame$Class<- "Class 1"
+Class2_frame$Class<- "Class 2"
+Class3_frame$Class<- "Class 3"
+Class4_frame$Class<- "Class 4"
+Class1_frame <- rename(Class1_frame, "Predicted" = "Ypred_class1")
+Class2_frame <- rename(Class2_frame, "Predicted" = "Ypred_class2")
+Class3_frame <- rename(Class3_frame, "Predicted" = "Ypred_class3")
+Class4_frame <- rename(Class4_frame, "Predicted" = "Ypred_class4")
+
+graph_data<-rbind(Class1_frame, Class2_frame, Class3_frame, Class4_frame)
+
+figure2C<-ggplot(graph_data, aes(x=Time, y=Predicted, color=Class, linetype=Sex)) + geom_smooth(aes(colour=Class, linetype=Sex)) + theme_classic() + xlab("Time (Months)") + ylab("HRU Total Cost (per $1000 CAD") + ylim(0,5)
+
+ggsave("Figure 2C - case trajectories.tiff",figure2C, width = 4, height = 4, dpi = 300)
+```
+
+
+## 3.4) Moderation by cognitive function
+
+Model development
+```{r}
+long.data4$MCI.2<-NA
+long.data4$MCI.2[long.data4$MCI==1]<-"MCI"
+long.data4$MCI.2[long.data4$MCI==0]<-"No MCI"
+
+#Base model
+MCI.model.base<-lcmm(HRU_totalcost_small~Time*MCI.2, random=~Time, subject='ID', ng = 1, link = '3-quant-splines', data = long.data4)
+
+#Full model
+MCI.model.moderation<-lcmm(HRU_totalcost_small~Time*MCI.2, random=~Time, subject='ID', mixture =~ Time*MCI.2, ng = 4, link = '3-quant-splines', data = long.data4, B=age.model.base)
+```
+
+Base model summary
+```{r}
+summary(MCI.model.base)
+```
+
+Full moderation model summary
+```{r}
+summary(MCI.model.moderation)
+```
+
+Graph
+```{r}
+Cog_mod_data<-data.frame(Time= seq(1,13, length=1000), MCI.2=rep(c("MCI","No MCI")))
+Cog_mod_pred <- predictY(MCI.model.moderation, Cog_mod_data, var.time ="Time", draws = FALSE)
+
+Time<-Cog_mod_pred$times
+MCI.2 <- rep(c('MCI', 'No MCI'), length.out = 1000)
+Classes<-as.data.frame(Cog_mod_pred$pred)
+Cog_mod_data_frame<-cbind(Time, MCI.2, Classes)
+
+Class1_frame<-Cog_mod_data_frame[c(1,2,3)]
+Class2_frame<-Cog_mod_data_frame[c(1,2,4)]
+Class3_frame<-Cog_mod_data_frame[c(1,2,5)]
+Class4_frame<-Cog_mod_data_frame[c(1,2,6)]
+Class1_frame$Class<- "Class 1"
+Class2_frame$Class<- "Class 2"
+Class3_frame$Class<- "Class 3"
+Class4_frame$Class<- "Class 4"
+Class1_frame <- rename(Class1_frame, "Predicted" = "Ypred_class1")
+Class2_frame <- rename(Class2_frame, "Predicted" = "Ypred_class2")
+Class3_frame <- rename(Class3_frame, "Predicted" = "Ypred_class3")
+Class4_frame <- rename(Class4_frame, "Predicted" = "Ypred_class4")
+
+graph_data<-rbind(Class1_frame, Class2_frame, Class3_frame, Class4_frame)
+
+figure2d<-ggplot(graph_data, aes(x=Time, y=Predicted, color=Class, linetype=MCI.2)) + geom_smooth(aes(colour=Class, linetype=MCI.2)) + theme_classic() + xlab("Time (Months)") + ylab("HRU Total Cost (per $1000 CAD") + ylim(0,5)
+
+ggsave("Figure 2D - case trajectories.tiff",figure2d, width = 4, height = 4, dpi = 300)
+```
+## 3.4) Moderation by physical function
+
+Model development
+```{r}
+long.data4$Frailty.2<-NA
+long.data4$Frailty.2[long.data4$Frailty==1]<-"Frail"
+long.data4$Frailty.2[long.data4$Frailty==0]<-"Non-Frail"
+
+#Base model
+Frailty.model.base<-lcmm(HRU_totalcost_small~Time*Frailty.2, random=~Time, subject='ID', ng = 1, link = '3-quant-splines', data = long.data4)
+
+#Full model
+Frailty.model.moderation<-lcmm(HRU_totalcost_small~Time*Frailty.2, random=~Time, subject='ID', mixture =~ Time*Frailty.2, ng = 4, link = '3-quant-splines', data = long.data4, B=age.model.base)
+```
+
+Base model summary
+```{r}
+summary(Frailty.model.base)
+```
+
+Full moderation model summary 
+```{r}
+summary(Frailty.model.moderation)
+```
+
+Graph
+```{r}
+Frailty_mod_data<-data.frame(Time= seq(1,13, length=1000), Frailty.2=rep(c("Frail","Non-Frail")))
+Frailty_mod_pred <- predictY(Frailty.model.moderation, Frailty_mod_data, var.time ="Time", draws = FALSE)
+
+Time<-Frailty_mod_pred$times
+Frailty.2 <- rep(c('Frail', 'Non-Frail'), length.out = 1000)
+Classes<-as.data.frame(Frailty_mod_pred$pred)
+Frailty_mod_data_frame<-cbind(Time, Frailty.2, Classes)
+
+Class1_frame<-Frailty_mod_data_frame[c(1,2,3)]
+Class2_frame<-Frailty_mod_data_frame[c(1,2,4)]
+Class3_frame<-Frailty_mod_data_frame[c(1,2,5)]
+Class4_frame<-Frailty_mod_data_frame[c(1,2,6)]
+Class1_frame$Class<- "Class 1"
+Class2_frame$Class<- "Class 2"
+Class3_frame$Class<- "Class 3"
+Class4_frame$Class<- "Class 4"
+Class1_frame <- rename(Class1_frame, "Predicted" = "Ypred_class1")
+Class2_frame <- rename(Class2_frame, "Predicted" = "Ypred_class2")
+Class3_frame <- rename(Class3_frame, "Predicted" = "Ypred_class3")
+Class4_frame <- rename(Class4_frame, "Predicted" = "Ypred_class4")
+
+graph_data<-rbind(Class1_frame, Class2_frame, Class3_frame, Class4_frame)
+
+figure2e<-ggplot(graph_data, aes(x=Time, y=Predicted, color=Class, linetype=Frailty.2)) + geom_smooth(aes(colour=Class, linetype=Frailty.2)) + theme_classic() + xlab("Time (Months)") + ylab("HRU Total Cost (per $1000 CAD") + ylim(0,5)
+
+ggsave("Figure 2E - case trajectories.tiff",figure2e, width = 4, height = 4, dpi = 300)
+```
+
+# 4) Sensitivity Analyses
+
+As a sensitivity analysis we first determined model fit with the normalized or log-transformed HRU data
+
+## 4.1) Model fit comparisons
+
+### 4.1.1) Normalized data
+```{r}
+model10<-lcmm(HRU_normalized~Time, random=~ Time, subject='ID', ng = 1 , link = 'linear', data = long.data2)
+model11<-lcmm(HRU_normalized~Time, random=~Time, subject='ID', ng = 1 , link = '3-equi-splines', data = long.data2)
+model12<-lcmm(HRU_normalized~Time, random=~Time, subject='ID', ng = 1 , link = '3-quant-splines', data = long.data2)
+model13<-lcmm(HRU_normalized~Time + I(Time^2), random=~ Time + I(Time^2), subject='ID', ng = 1 , link = 'linear', data = long.data2)
+model14<-lcmm(HRU_normalized~Time + I(Time^2), random=~Time + I(Time^2), subject='ID', ng = 1 , link = '3-equi-splines', data = long.data2)
+model15<-lcmm(HRU_normalized~Time + I(Time^2), random=~Time + I(Time^2), subject='ID', ng = 1 , link = '3-quant-splines', data = long.data2)
+model16<-lcmm(HRU_normalized~Time + I(Time^2) + I(Time^3), random=~ Time + I(Time^2) + I(Time^3), subject='ID', ng = 1 , link = 'linear', data = long.data2)
+model17<-lcmm(HRU_normalized~Time + I(Time^2) + I(Time^3), random=~Time + I(Time^2) + I(Time^3), subject='ID', ng = 1 , link = '3-equi-splines', data = long.data2)
+model18<-lcmm(HRU_normalized~Time + I(Time^2) + I(Time^3), random=~Time + I(Time^2) + I(Time^3), subject='ID', ng = 1 , link = '3-quant-splines', data = long.data2)
+
+summarytable(model10, model11, model12, model13, model14, model15, model16, model17, model18, which = c("G", "loglik", "conv", "npm", "AIC", "BIC", "SABIC", "entropy","ICL", "%class"))
+```
+
+The best fitting models were cubic linear (model16), cubic 3-equi-spline (model17), and cubic 3-quanitative splines (model18)
+
+Cubic spline linear models are described belowl. None of these models fits very well.
+```{r}
+model16a<-lcmm(HRU_normalized~Time + I(Time^2) + I(Time^3), random=~ Time + I(Time^2) + I(Time^3), subject='ID', ng = 1 , link = 'linear', data = long.data2)
+model16b<-lcmm(HRU_normalized~Time + I(Time^2) + I(Time^3), random=~ Time + I(Time^2) + I(Time^3),  mixture =~ Time + I(Time^2) + I(Time^3), subject='ID', ng = 2 , link = 'linear', data = long.data2, B=model16a)
+model16c<-lcmm(HRU_normalized~Time + I(Time^2) + I(Time^3), random=~ Time + I(Time^2) + I(Time^3), mixture =~ Time + I(Time^2) + I(Time^3), subject='ID', ng = 3 , link = 'linear', data = long.data2, B=model16a)
+model16d<-lcmm(HRU_normalized~Time + I(Time^2) + I(Time^3), random=~ Time + I(Time^2) + I(Time^3), mixture =~ Time + I(Time^2) + I(Time^3), subject='ID', ng = 4 , link = 'linear', data = long.data2, B=model16a)
+model16e<-lcmm(HRU_normalized~Time + I(Time^2) + I(Time^3), random=~ Time + I(Time^2) + I(Time^3), mixture =~ Time + I(Time^2) + I(Time^3), subject='ID', ng = 5 , link = 'linear', data = long.data2, B=model16a)
+model16f<-lcmm(HRU_normalized~Time + I(Time^2) + I(Time^3), random=~ Time + I(Time^2) + I(Time^3), mixture =~ Time + I(Time^2) + I(Time^3), subject='ID', ng = 6 , link = 'linear', data = long.data2, B=model16a)
+
+summarytable(model16a, model16b, model16c, model16d, model16e, model16f, which = c("G", "loglik", "conv", "npm", "AIC", "BIC", "SABIC", "entropy","ICL", "%class"))
+```
+
+Cubic equi spline models are described below. The only reasonably good fitting models are the 2 class (model 17b) and 3 class (model 17c) models 
+```{r}
+model17a<-lcmm(HRU_normalized~Time + I(Time^2) + I(Time^3), random=~ Time + I(Time^2) + I(Time^3), subject='ID', ng = 1 , link = '3-quant-splines', data = long.data2)
+model17b<-lcmm(HRU_normalized~Time + I(Time^2) + I(Time^3), random=~ Time + I(Time^2) + I(Time^3),  mixture =~ Time + I(Time^2) + I(Time^3), subject='ID', ng = 2 , link = '3-equi-splines', data = long.data2, B=model17a)
+model17c<-lcmm(HRU_normalized~Time + I(Time^2) + I(Time^3), random=~ Time + I(Time^2) + I(Time^3), mixture =~ Time + I(Time^2) + I(Time^3), subject='ID', ng = 3 , link = '3-equi-splines', data = long.data2, B=model17a)
+model17d<-lcmm(HRU_normalized~Time + I(Time^2) + I(Time^3), random=~ Time + I(Time^2) + I(Time^3), mixture =~ Time + I(Time^2) + I(Time^3), subject='ID', ng = 4 , link = '3-equi-splines', data = long.data2, B=model17a)
+model17e<-lcmm(HRU_normalized~Time + I(Time^2) + I(Time^3), random=~ Time + I(Time^2) + I(Time^3), mixture =~ Time + I(Time^2) + I(Time^3), subject='ID', ng = 5 , link = '3-equi-splines', data = long.data2, B=model17a)
+model17f<-lcmm(HRU_normalized~Time + I(Time^2) + I(Time^3), random=~ Time + I(Time^2) + I(Time^3), mixture =~ Time + I(Time^2) + I(Time^3), subject='ID', ng = 6 , link = '3-equi-splines', data = long.data2, B=model17a)
+
+summarytable(model17a, model17b, model17c, model17d, model17e, model17f, which = c("G", "loglik", "conv", "npm", "AIC", "BIC", "SABIC", "entropy","ICL", "%class"))
+```
+
+Cubic quant-spline models are described below. No model fits the data very well
+```{r}
+model18a<-lcmm(HRU_normalized~Time + I(Time^2) + I(Time^3), random=~ Time + I(Time^2) + I(Time^3), subject='ID', ng = 1 , link = '3-quant-splines', data = long.data2)
+model18b<-lcmm(HRU_normalized~Time + I(Time^2) + I(Time^3), random=~ Time + I(Time^2) + I(Time^3),  mixture =~ Time + I(Time^2) + I(Time^3), subject='ID', ng = 2 , link = '3-quant-splines', data = long.data2, B=model18a)
+model18c<-lcmm(HRU_normalized~Time + I(Time^2) + I(Time^3), random=~ Time + I(Time^2) + I(Time^3), mixture =~ Time + I(Time^2) + I(Time^3), subject='ID', ng = 3 , link = '3-quant-splines', data = long.data2, B=model18a)
+model18d<-lcmm(HRU_normalized~Time + I(Time^2) + I(Time^3), random=~ Time + I(Time^2) + I(Time^3), mixture =~ Time + I(Time^2) + I(Time^3), subject='ID', ng = 4 , link = '3-quant-splines', data = long.data2, B=model18a)
+model18e<-lcmm(HRU_normalized~Time + I(Time^2) + I(Time^3), random=~ Time + I(Time^2) + I(Time^3), mixture =~ Time + I(Time^2) + I(Time^3), subject='ID', ng = 5 , link = '3-quant-splines', data = long.data2, B=model18a)
+model18f<-lcmm(HRU_normalized~Time + I(Time^2) + I(Time^3), random=~ Time + I(Time^2) + I(Time^3), mixture =~ Time + I(Time^2) + I(Time^3), subject='ID', ng = 6 , link = '3-quant-splines', data = long.data2, B=model18a)
+
+summarytable(model18a, model18b, model18c, model18d, model18e, model18f, which = c("G", "loglik", "conv", "npm", "AIC", "BIC", "SABIC", "entropy","ICL", "%class"))
+```
+
+We then plotted the only two models which seemed to fit the data reasonably well
+
+Cubic, equi-spline model with 2 classes
+```{r}
+OEP_data<-data.frame(Time= seq(1,13, length=1000))
+OEP_pred <- predictY(model17b, OEP_data, var.time ="Time", draws = FALSE)
+plot(OEP_pred, col=c("red","navy"), lwd = 2, xlab="Time (Months)", ylab="Normalized HRU Total Cost", legend=NULL, main="Cubic Model, Equispline: 2 Classes",ylim=c(0,.6))
+legend(x="topleft",legend=c("Class 1","Class 2"), col=c("red","navy"), lty=1,lwd=2, ncol=1, bty="n", cex = 0.7)
+```
+
+Cubic, equi-spline model with 3 classes
+```{r}
+OEP_data<-data.frame(Time= seq(1,13, length=1000))
+OEP_pred <- predictY(model17c, OEP_data, var.time ="Time", draws = FALSE)
+plot(OEP_pred, col=c("red","navy", "green"), lwd = 2, xlab="Time (Months)", ylab="Normalized HRU Total Cost", legend=NULL, main="Cubic Model, Equi-Spline: 3 Classes",ylim=c(0,.6))
+legend(x="topleft",legend=c("Class 1","Class 2", "Class 3"), col=c("red","navy", "green"), lty=1,lwd=2, ncol=1, bty="n", cex = 0.7)
+```
+
+Neither of these models fit well
+
+### 4.1.2) Log-transformed data
+```{r}
+model19<-lcmm(HRU_log~Time, random=~ Time, subject='ID', ng = 1 , link = 'linear', data = long.data2)
+model20<-lcmm(HRU_log~Time, random=~Time, subject='ID', ng = 1 , link = '3-equi-splines', data = long.data2)
+model21<-lcmm(HRU_log~Time, random=~Time, subject='ID', ng = 1 , link = '3-quant-splines', data = long.data2)
+model22<-lcmm(HRU_log~Time + I(Time^2), random=~ Time + I(Time^2), subject='ID', ng = 1 , link = 'linear', data = long.data2)
+model23<-lcmm(HRU_log~Time + I(Time^2), random=~Time + I(Time^2), subject='ID', ng = 1 , link = '3-equi-splines', data = long.data2)
+model24<-lcmm(HRU_log~Time + I(Time^2), random=~Time + I(Time^2), subject='ID', ng = 1 , link = '3-quant-splines', data = long.data2)
+model25<-lcmm(HRU_log~Time + I(Time^2) + I(Time^3), random=~ Time + I(Time^2) + I(Time^3), subject='ID', ng = 1 , link = 'linear', data = long.data2)
+model26<-lcmm(HRU_log~Time + I(Time^2) + I(Time^3), random=~Time + I(Time^2) + I(Time^3), subject='ID', ng = 1 , link = '3-equi-splines', data = long.data2)
+model27<-lcmm(HRU_log~Time + I(Time^2) + I(Time^3), random=~Time + I(Time^2) + I(Time^3), subject='ID', ng = 1 , link = '3-quant-splines', data = long.data2)
+
+summarytable(model19, model20, model21, model22, model23, model24, model25, model26, model27, which = c("G", "loglik", "conv", "npm", "AIC", "BIC", "SABIC", "entropy","ICL", "%class"))
+```
+
+The best fitting models were quadratic 3-quant spline (model 24), 1st order 3-quant spline (model 21), and quadratic 3-equi-spline (model 23)
+
+Quadratic 3-quant spline models are described below. The best fitting models were 2 class (model 24b) and 3 class models (model 24c).
+```{r}
+model24a<-lcmm(HRU_log~Time + I(Time^2), random=~ Time + I(Time^2), subject='ID', ng = 1 , link = '3-quant-splines', data = long.data2)
+model24b<-lcmm(HRU_log~Time + I(Time^2), random=~ Time + I(Time^2),  mixture =~ Time + I(Time^2), subject='ID', ng = 2 , link = '3-quant-splines', data = long.data2, B=model24a)
+model24c<-lcmm(HRU_log~Time + I(Time^2), random=~ Time + I(Time^2),  mixture =~ Time + I(Time^2), subject='ID', ng = 3 , link = '3-quant-splines', data = long.data2, B=model24a)
+model24d<-lcmm(HRU_log~Time + I(Time^2), random=~ Time + I(Time^2),  mixture =~ Time + I(Time^2), subject='ID', ng = 4 , link = '3-quant-splines', data = long.data2, B=model24a)
+model24e<-lcmm(HRU_log~Time + I(Time^2), random=~ Time + I(Time^2),  mixture =~ Time + I(Time^2), subject='ID', ng = 5 , link = '3-quant-splines', data = long.data2, B=model24a)
+model24f<-lcmm(HRU_log~Time + I(Time^2), random=~ Time + I(Time^2),  mixture =~ Time + I(Time^2), subject='ID', ng = 6 , link = '3-quant-splines', data = long.data2, B=model24a)
+
+summarytable(model24a, model24b, model24c, model24d, model24e, model24f, which = c("G", "loglik", "conv", "npm", "AIC", "BIC", "SABIC", "entropy","ICL", "%class"))
+```
+
+
+1st order 3-quant spline models are described below. The best fitting models was the 2 class model (model 21b)
+```{r}
+model21a<-lcmm(HRU_log~Time, random=~ Time, subject='ID', ng = 1 , link = '3-quant-splines', data = long.data2)
+model21b<-lcmm(HRU_log~Time, random=~ Time, subject='ID', mixture =~ Time, ng = 2 , link = '3-quant-splines', data = long.data2, B=model21a)
+model21c<-lcmm(HRU_log~Time, random=~ Time, subject='ID', mixture =~ Time, ng = 3 , link = '3-quant-splines', data = long.data2, B=model21a)
+model21d<-lcmm(HRU_log~Time, random=~ Time, subject='ID', mixture =~ Time, ng = 4 , link = '3-quant-splines', data = long.data2, B=model21a)
+model21e<-lcmm(HRU_log~Time, random=~ Time, subject='ID', mixture =~ Time, ng = 5 , link = '3-quant-splines', data = long.data2, B=model21a)
+model21f<-lcmm(HRU_log~Time, random=~ Time, subject='ID', mixture =~ Time, ng = 6 , link = '3-quant-splines', data = long.data2, B=model21a)
+
+summarytable(model21a, model21b, model21c, model21d, model21e, model21f, which = c("G", "loglik", "conv", "npm", "AIC", "BIC", "SABIC", "entropy","ICL", "%class"))
+```
+
+
+Quadratic 3-equi spline models are described below. The best fitting model was the 2 class model (model 23b)
+```{r}
+model23a<-lcmm(HRU_log~Time + I(Time^2), random=~ Time + I(Time^2), subject='ID', ng = 1 , link = '3-equi-splines', data = long.data2)
+model23b<-lcmm(HRU_log~Time + I(Time^2), random=~ Time + I(Time^2),  mixture =~ Time + I(Time^2), subject='ID', ng = 2 , link = '3-equi-splines', data = long.data2, B=model23a)
+model23c<-lcmm(HRU_log~Time + I(Time^2), random=~ Time + I(Time^2),  mixture =~ Time + I(Time^2), subject='ID', ng = 3 , link = '3-equi-splines', data = long.data2, B=model23a)
+model23d<-lcmm(HRU_log~Time + I(Time^2), random=~ Time + I(Time^2),  mixture =~ Time + I(Time^2), subject='ID', ng = 4 , link = '3-equi-splines', data = long.data2, B=model23a)
+model23e<-lcmm(HRU_log~Time + I(Time^2), random=~ Time + I(Time^2),  mixture =~ Time + I(Time^2), subject='ID', ng = 5 , link = '3-equi-splines', data = long.data2, B=model23a)
+model23f<-lcmm(HRU_log~Time + I(Time^2), random=~ Time + I(Time^2),  mixture =~ Time + I(Time^2), subject='ID', ng = 6 , link = '3-equi-splines', data = long.data2, B=model23a)
+
+summarytable(model23a, model23b, model23c, model23d, model23e, model23f, which = c("G", "loglik", "conv", "npm", "AIC", "BIC", "SABIC", "entropy","ICL", "%class"))
+```
+
+Here is a comparison of the best fitting models.
+```{r}
+summarytable(model24b, model24c, model21b, model23b, which = c("G", "loglik", "conv", "npm", "AIC", "BIC", "SABIC", "entropy","ICL", "%class"))
+```
+
+
+We then plotted the the trajectories of each model
+
+Quadratic 3-quant spline with 2 classes
+```{r}
+OEP_data<-data.frame(Time= seq(1,13, length=1000))
+OEP_pred <- predictY(model24b, OEP_data, var.time ="Time", draws = FALSE)
+plot(OEP_pred, col=c("red","navy"), lwd = 2, xlab="Time (Months)", ylab="Log-transformed HRU Total Cost (per $1000)", legend=NULL, main="Quadratic 3-quant spline mode: 2 Classes",ylim=c(0,5))
+legend(x="topleft",legend=c("Class 1","Class 2"), col=c("red","navy"), lty=1,lwd=2, ncol=1, bty="n", cex = 0.7)
+```
+
+Quadratic 3-quant spline with 3 classes
+```{r}
+OEP_data<-data.frame(Time= seq(1,13, length=1000))
+OEP_pred <- predictY(model24c, OEP_data, var.time ="Time", draws = FALSE)
+plot(OEP_pred, col=c("red","navy", "green"), lwd = 2, xlab="Time (Months)", ylab="Log-transformed HRU Total Cost (per $1000)", legend=NULL, main="Quadratic 3-quant spline model: 3 Classes",ylim=c(0,8))
+legend(x="topleft",legend=c("Class 1","Class 2"), col=c("red","navy", "green"), lty=1,lwd=2, ncol=1, bty="n", cex = 0.7)
+```
+
+1st order 3-quant spline with 2 classes
+```{r}
+OEP_data<-data.frame(Time= seq(1,13, length=1000))
+OEP_pred <- predictY(model21b, OEP_data, var.time ="Time", draws = FALSE)
+plot(OEP_pred, col=c("red","navy"), lwd = 2, xlab="Time (Months)", ylab="Log-transformed HRU Total Cost (per $1000)", legend=NULL, main="1st order 3-quant spline model: 2 Classes",ylim=c(0,8))
+legend(x="topleft",legend=c("Class 1","Class 2"), col=c("red","navy"), lty=1,lwd=2, ncol=1, bty="n", cex = 0.7)
+```
+
+Quadratic 3-quant spline with 2 classes
+```{r}
+OEP_data<-data.frame(Time= seq(1,13, length=1000))
+OEP_pred <- predictY(model23b, OEP_data, var.time ="Time", draws = FALSE)
+plot(OEP_pred, col=c("red","navy"), lwd = 2, xlab="Time (Months)", ylab="Log-transformed HRU Total Cost (per $1000)", legend=NULL, main="Quadratic 3-quant spline model: 2 Classes",ylim=c(0,8))
+legend(x="topleft",legend=c("Class 1","Class 2"), col=c("red","navy"), lty=1,lwd=2, ncol=1, bty="n", cex = 0.7)
+```
+
+### 4.1.3) Final Model
+
+Based on these data, the most simple and easily interpretable model is model21b.
+
+```{r}
+summary(model21b)
+postprob(model21b)
+```
+
+Graph of model 21b
+```{r}
+OEP_data<-data.frame(Time= seq(1,13, length=1000))
+OEP_pred <- predictY(model21b, OEP_data, var.time ="Time", draws = FALSE)
+Time<-OEP_pred$times
+Classes<-as.data.frame(OEP_pred$pred)
+OEP_data_frame<-cbind(Time, Classes)
+OEP_data_frame$class1_untrans<-exp(OEP_data_frame$Ypred_class1)
+OEP_data_frame$class2_untrans<-exp(OEP_data_frame$Ypred_class2)
+
+Class1_frame<-OEP_data_frame[c(1,4)]
+Class2_frame<-OEP_data_frame[c(1,5)]
+Class1_frame$Class<- "Class 1"
+Class2_frame$Class<- "Class 2"
+
+Class1_frame<-rename(Class1_frame,c("HRU"="class1_untrans"))
+Class2_frame<-rename(Class2_frame,c("HRU"="class2_untrans"))
+
+graph_data<-rbind(Class1_frame, Class2_frame)
+
+ggplot(graph_data, aes(x=Time, y=HRU, group=Class)) + geom_line(aes(colour=Class)) + theme_classic() + xlab("Time (Months)") + ylab("HRU Total Cost") + ylim(0,250)
+```
+
+### 4.1.4) Class descriptions
+Create data frame with classes
+```{r}
+model21b.frame<-model21b$pprob
+
+baseline.data.3<-merge(model21b.frame, falls_plus_HRU_3, by="ID")
+
+baseline.data.4 <- rename(baseline.data.3, "Falls_number" = "Total Falls", "Final_Weight" = "Final Weight", "Final_Height"="Final Height", "WHR"="Waist to Hip Ratio","FCI"="FCI Total",
+                          "IADL"="Total IADL", "TrailsBA"="Trail Difference","TUG"="Mean TUG", "GaitSpeed"="Gait Speed", "SPPB"="NIA Total Score") 
+
+baseline.data.4$Gender[baseline.data.4$Gender==1]<-"Female"
+baseline.data.4$Gender[baseline.data.4$Gender==2]<-"Male"
+
+baseline.data.4$BMI<-baseline.data.4$Final_Weight/((baseline.data.4$Final_Height/100)^2)
+```
+
+Describe participants
+```{r}
+baseline.vars.2<-dput(names(baseline.data.4[c(11,5,15,14,36,18,19,21,10,31,32,34,22,23,34,35)]))
+
+Table1_full<-CreateTableOne(vars=baseline.vars.2, strata="class", data=baseline.data.4)
+print(Table1_full,contDigits=2,missing=TRUE,quote=TRUE)
+```
+
+
+# 5) Figure 1 REVISED
+
+Exclude Class 1 and Class 3 from the graph
+```{r}
+OEP_pred <- predictY(model3d, OEP_data, var.time ="Time", draws = FALSE)
+OEP_pred_filtered <- OEP_pred$pred[, c("Ypred_class2", "Ypred_class4")]
+tiff("Figure 1 REVISED.tiff", width=800, height=400)
+plot(OEP_pred_filtered[,1], type="l", col="navy", lwd=2, xlab="Time (Months)", ylab="HRU Total Cost (per $1000)", 
+     ylim=c(0,5)) 
+lines(OEP_pred_filtered[,2], col="purple", lwd=2, lty=2)
+legend(x="topleft", legend=c("Class 2", "Class 4"), col=c("navy", "purple"), lty=1, lwd=2, ncol=1, bty="n", cex=0.7)
+dev.off()
+```
+
+# 6) Figure 2 REVISED
+
+Exclude Class 1 and Class 3
+```{r}
+Sex_mod_data<-data.frame(Time= seq(1,13, length=1000), Sex=rep(c("Male","Female")))
+Sex_mod_pred <- predictY(sex.model.moderation, Sex_mod_data, var.time ="Time", draws = FALSE)
+
+Time<-Age_mod_pred$times
+Sex <- rep(c('Male', 'Female'), length.out = 1000)
+Classes<-as.data.frame(Sex_mod_pred$pred)
+Sex_mod_data_frame<-cbind(Time, Sex, Classes)
+
+Class2_frame<-Sex_mod_data_frame[c(1,2,4)]
+Class4_frame<-Sex_mod_data_frame[c(1,2,6)]
+Class2_frame$Class<- "Class 2"
+Class4_frame$Class<- "Class 4"
+Class2_frame <- rename(Class2_frame, "Predicted" = "Ypred_class2")
+Class4_frame <- rename(Class4_frame, "Predicted" = "Ypred_class4")
+
+graph_data<-rbind(Class2_frame, Class4_frame)
+
+figure2C<-ggplot(graph_data, aes(x=Time, y=Predicted, color=Class, linetype=Sex)) + geom_smooth(aes(colour=Class, linetype=Sex)) + theme_classic() + xlab("Time (Months)") + ylab("HRU Total Cost (per $1000 CAD") + ylim(0,5)
+
+ggsave("Figure 2 REVISED.tiff",figure2C, width = 6, height = 6, dpi = 300)
+```
+
+
+# 7) Reviewer Request: Final model class differences 
+
+Age
+```{r}
+test<-lm(Age~factor(class), baseline.data.2)
+anova(test)
+```
+
+BMI
+```{r}
+test<-lm(BMI~factor(class), baseline.data.2)
+anova(test)
+```
+
+Gender
+```{r}
+test<-chisq.test(baseline.data.2$Gender, baseline.data.2$class)
+test
+
+table(baseline.data.2$class, baseline.data.2$Gender)
+```
+
+Falls total
+```{r}
+test<-lm(Falls_number~factor(class), baseline.data.2)
+anova(test)
+
+emmeans(test, ~factor(class))
+
+contrast(emmeans(test, ~factor(class)),"pairwise")
+```
+
+PPA
+```{r}
+test<-lm(PPA~factor(class), baseline.data.2)
+anova(test)
+```
+
+FCI
+```{r}
+test<-lm(FCI~factor(class), baseline.data.2)
+anova(test)
+```
+
+IADL
+```{r}
+test<-lm(IADL~factor(class), baseline.data.2)
+anova(test)
+```
+
+MMSE
+```{r}
+test<-lm(MMSE~factor(class), baseline.data.2)
+anova(test)
+```
+
+MoCA
+```{r}
+test<-lm(MoCA~factor(class), baseline.data.2)
+anova(test)
+```
+
+Stroop 3-2
+```{r}
+test<-lm(Stroop3_2~factor(class), baseline.data.2)
+anova(test)
+```
+
+Trails B-A
+```{r}
+test<-lm(TrailsBA~factor(class), baseline.data.2)
+anova(test)
+```
+
+
+Digit Symbol Substitution Test
+```{r}
+test<-lm(DSST~factor(class), baseline.data.2)
+anova(test)
+```
+
+Digit Span Forward - Backward
+```{r}
+test<-lm(DSFB~factor(class), baseline.data.2)
+anova(test)
+```
+
+Gait Speed
+```{r}
+test<-lm(GaitSpeed~factor(class), baseline.data.2)
+anova(test)
+```
+
+Short Physical Performance Battery
+```{r}
+test<-lm(SPPB~factor(class), baseline.data.2)
+anova(test)
+```
+
+Timed Up and Go
+```{r}
+test<-lm(TUG~factor(class), baseline.data.2)
+anova(test)
+```
